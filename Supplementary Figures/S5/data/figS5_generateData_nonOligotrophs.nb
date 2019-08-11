@@ -1,0 +1,249 @@
+(*
+Run this code to determine the critical budget change deltaE at which a non-oligotroph becomes dominant.
+We do this across the range of strategies, each averaged over many communities, at a range of tau_D.
+
+This notebook is formatted for batch mode, so it's best to open it with a text editor rather than Mathematica itself.
+*)
+
+Clear["Global`*"]; 
+precision = 30;
+$MinPrecision = precision;
+
+s1 = 0.4;
+getPositions[pop0_] :=
+  Block[{m0, list, extendedPop},
+   m0 = Length[pop0];
+   extendedPop = Join[{0}, pop0];
+   Table[{Total[extendedPop[[1 ;; i - 1]]], 
+     Total[extendedPop[[1 ;; i]]]}, {i, 2, m0 + 1}]
+   ];
+
+getConcentration[n_, nutrient_, \[Alpha]_] :=
+  Block[{i, m0, c, dc, m, cSys, cSysWrap, cSystem, dcSys, dcSysWrap, 
+    dcSystem, totalcSys, vars, aVars, bVars, z},
+   m0 = Length[n];
+   aVars = ToExpression[Table["a" <> IntegerString[k], {k, m0}]];
+   bVars = ToExpression[Table["b" <> IntegerString[k], {k, m0}]];
+   c[a_, b_, alpha_, \[Theta]_] := 
+    a*E^(Sqrt[alpha/d]*\[Theta]) + b*E^(-Sqrt[alpha/d]*\[Theta]) + 
+     s[[nutrient]]/alpha;
+   dc[a_, b_, alpha_, \[Theta]_] := 
+    Sqrt[alpha/d]*(a*E^(Sqrt[alpha/d]*\[Theta]) - 
+       b*E^(-Sqrt[alpha/d]*\[Theta]));
+   
+   (*  Create a system of eqs for c(\[Theta]) in each region *)
+   cSys = 
+    Table[c[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] ==
+       c[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   cSysWrap = 
+    c[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+     c[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   cSystem = Join[cSys, {cSysWrap}];
+   
+   (*do the same thing for the derivatives of c(\[Theta])*)
+   dcSys = 
+    Table[dc[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], 
+       n[[i]]] == 
+      dc[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   dcSysWrap = 
+    dc[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] ==
+      dc[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   dcSystem = Join[dcSys, {dcSysWrap}];
+   
+   totalcSys = Join[cSystem, dcSystem];
+   vars = Table[{aVars[[i]], bVars[[i]]}, {i, m0}] // Flatten;
+   {z, m} = CoefficientArrays[totalcSys, vars];
+   LinearSolve[m, -z]  
+   ];
+(*returns {a1,b1,a2,b2...}: in a region \[Sigma] \
+c_i=a*E^(a*\[Theta]/d)+b*E^(-a*\[Theta]/d)+si/\[Alpha]i. *)
+
+fullConcentration[n_, nutrient_] :=
+  Block[{a, b, c, coeff, positions, pieces, conditions, fullC},
+   coeff = getConcentration[n, nutrient];
+   positions = getPositions[n];
+   a = Table[coeff[[2*i - 1]], {i, m}];
+   b = Table[coeff[[2*i]], {i, m}];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   pieces = 
+    Table[c[a[[j]], b[[j]], \[Alpha][[j, nutrient]], 
+      theta - positions[[j, 1]]], {j, m}];
+   conditions = 
+    Table[positions[[i, 1]] < theta <= positions[[i, 2]], {i, m}];
+   fullC = Piecewise[Transpose[{pieces, conditions}]]
+   ];
+supply = 1;  (*total nutrient supply*)
+\[Delta] = supply;
+e = 1;             (* total enzyme budget*)
+steps = (10^7);
+s2 = 1 - s1;
+s = {s1, s2}*supply;
+lSet = {1, 3, 5, 7, 9};
+m = 10;
+numTrials = 100;
+d = 1; // N(*diffusion coefficient*)
+testAlpha = Join[Range[.04, s1, .04], Range[.5 + .04, 1, .04]];
+testAlpha = DeleteCases[testAlpha, s1];
+survivalCutoff = 10^-6;
+sCutoff = 2;
+deltaEList = {10^-6,10^-5, 10^-4, 10^-3, 10^-2, 10^-1, .9};
+getGrowth[pop_, species_, c_, \[Alpha]_] :=
+  Block[{growth, myN, myA, myB},
+   myN = pop[[species]];
+   myA = c[[species*2 - 1]];
+   myB = c[[species*2]];
+   
+   growth = 
+    Table[\[Alpha][[species, 
+         i]]*((s[[i]]*myN/\[Alpha][[species, i]]) + 
+         Sqrt[d/\[Alpha][[species, 
+              i]]]*(myA[[i]]*(E^(myN*
+                  Sqrt[\[Alpha][[species, i]]/d]) - 1) - 
+            myB[[i]]*(E^(-myN*Sqrt[\[Alpha][[species, i]]/d]) - 
+               1))), {i, 2}] // Total
+   ];
+ndot[n_?(VectorQ[#, NumericQ] &), strategies_] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = n;
+   n0 = n0 /. {x_ /; x < 10^-8 -> 0};
+   cCoeff = 
+    Transpose[{getConcentration[n0, 1, strategies], 
+      getConcentration[n0, 2, strategies]}];
+   growthTable = 
+    Table[getGrowth[n0, i, cCoeff, strategies], {i, Length[n0]}];
+   (*\[Delta]=Total[growthTable];*)
+   dn = growthTable - \[Delta]*n0
+   ];
+getBaselineCommunity[numSpecies_] :=
+ Module[{baselineAlphas, randStrat},
+  baselineAlphas = {};
+  While[Length[baselineAlphas] < numSpecies,
+   randStrat = RandomReal[e];
+   If[! (s1 < randStrat < 0.5), AppendTo[baselineAlphas, randStrat]]
+   ];
+  baselineAlphas
+  ]
+getDeltaEcrit[theseStrats_, thisL_] :=
+ Module[{l, nInit, sol0, s0, deltaS, delEIndex, thisDeltaE, thisSol, 
+   thisS, firstRound, this\[Alpha], exceededRange},
+  l = thisL;
+  nInit = l*ConstantArray[1/m, m] // N;
+  
+  (*get S(\[Delta]E=0)*)
+  this\[Alpha] = 
+   Table[{theseStrats[[j]], e - theseStrats[[j]]}, {j, 
+     Length[theseStrats]}];
+  sol0 = NDSolveValue[{n'[t] == ndot[n[t], this\[Alpha]], 
+     n[0] == nInit}, n, {t, 0, steps}, 
+    Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-11}];
+  s0 = Count[sol0[sol0["Domain"][[1, 2]]], x_ /; x > survivalCutoff];
+  
+  (*find order of magnitude of E*)
+  deltaS = 0;
+  delEIndex = 1;
+  exceededRange = False;
+  
+  While[deltaS < sCutoff && exceededRange == False,
+   
+   delEIndex++;
+   thisDeltaE = deltaEList[[delEIndex]];
+   this\[Alpha] = 
+    Table[{theseStrats[[j]], e - theseStrats[[j]]}, {j, 
+      Length[theseStrats]}];
+   this\[Alpha][[m]] = this\[Alpha][[m]]*(1 + thisDeltaE);
+   
+   thisSol = 
+    NDSolveValue[{n'[t] == ndot[n[t], this\[Alpha]], n[0] == nInit}, 
+     n, {t, 0, steps}, 
+     Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-11}];
+   thisS = 
+    Count[thisSol[thisSol["Domain"][[1, 2]]], 
+     x_ /; x > survivalCutoff];
+   
+   deltaS = s0 - thisS;
+   
+   If[deltaS < sCutoff && delEIndex == Length[deltaEList], 
+    exceededRange = True];
+   ];
+  
+  If[exceededRange == False,
+   (*now do increments of previous order of magnitude*)
+   thisDeltaE = deltaEList[[delEIndex - 1]];
+   deltaS = 0;
+   firstRound = True;
+   While[deltaS < sCutoff,
+    
+    (*increase \[Delta]E for next try*)
+    If[firstRound == False, thisDeltaE += deltaEList[[delEIndex - 1]]];
+    
+    this\[Alpha] = 
+     Table[{theseStrats[[j]], e - theseStrats[[j]]}, {j, 
+       Length[theseStrats]}];
+    this\[Alpha][[m]] = this\[Alpha][[m]]*(1 + thisDeltaE);
+    
+    thisSol = 
+     NDSolveValue[{n'[t] == ndot[n[t], this\[Alpha]], n[0] == nInit}, 
+      n, {t, 0, steps}, 
+      Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-11}];
+    thisS = 
+     Count[thisSol[thisSol["Domain"][[1, 2]]], 
+      x_ /; x > survivalCutoff];
+    
+    deltaS = s0 - thisS;
+    firstRound = False;
+    ];
+   
+   thisDeltaE, -1]
+  ]
+parameterCoords = 
+  Flatten[Table[{lSet[[i]], testAlpha[[j]]}, {i, Length[lSet]}, {j, 
+     Length[testAlpha]}], 1];
+(*format: L, alpha_oligotroph, then the ten deltaE*)
+outputMatrix = 
+  Table[Join[parameterCoords[[i]], {ConstantArray[0, numTrials]}], {i,
+     Length[parameterCoords]}];
+SetSharedVariable[outputMatrix];
+
+(*
+(*loop over 10 replicates, parellelize within*)
+For[communityReplicates = 1, communityReplicates <= numTrials, 
+  communityReplicates++,
+  alphas = getBaselineCommunity[m - 1];
+  
+  ParallelDo[
+   myL = outputMatrix[[i, 1]];
+   thisTest = outputMatrix[[i, 2]];
+   theseAlphas = Join[alphas, {thisTest}];
+   
+   thisEcrit = getDeltaEcrit[theseAlphas, myL];
+   
+   outputMatrix[[i, 3, communityReplicates]] = thisEcrit;
+   , {i, Length[outputMatrix]}];
+  ];
+Export["eCrit_nonOligo_n100_s1_pt"<>ToString[s1*100]<>"mx",outputMatrix];*)
+
+(*loop over L, parellelize replicates*)
+allCommunities=Table[getBaselineCommunity[m - 1],{i,numTrials}];
+ParallelDo[
+	alphas=allCommunities[[k]];
+	Do[
+	   myL = outputMatrix[[i, 1]];
+	   thisTest = outputMatrix[[i, 2]];
+	   theseAlphas = Join[alphas, {thisTest}];
+	   
+	   thisEcrit = getDeltaEcrit[theseAlphas, myL];
+	   
+	   outputMatrix[[i, 3, k]] = thisEcrit;
+	   , {i, Length[outputMatrix]}
+	   ];
+
+	 If[Mod[k,20]==0,Export["eCrit_nonOligo_n100_k_"<>ToString[k]<>"_s1_pt" <> ToString[s1*100] <> "mx", outputMatrix];]
+	
+,{k,numTrials}];
+
+Export["eCrit_nonOligo_n100_s1_pt" <> ToString[s1*100] <> "mx", outputMatrix];
+

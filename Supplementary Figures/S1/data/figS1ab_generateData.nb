@@ -1,0 +1,208 @@
+(*
+
+Code to generate the data for Fig. S1A and S1B.
+It chooses random strategies and returns their steady states at different system size L, with a balanced nutrient supply (s1=0.5).
+For each set of strategies, it tests the high-L case for numerical stiffness.
+
+This notebook is formatted for batch mode, so it's best to open and edit in a text editor rather than Mathematica itself.
+
+*)
+
+
+Clear["Global`*"]; 
+precision = 30;
+$MinPrecision = precision;
+
+getPositions[pop0_] :=
+  Block[{m0, list, extendedPop},
+   m0 = Length[pop0];
+   extendedPop = Join[{0}, pop0];
+   Table[{Total[extendedPop[[1 ;; i - 1]]], 
+     Total[extendedPop[[1 ;; i]]]}, {i, 2, m0 + 1}]
+   ];
+
+getConcentration[n_, nutrient_] :=
+  Block[{i, m0, c, dc, m, cSys, cSysWrap, cSystem, dcSys, dcSysWrap, 
+    dcSystem, totalcSys, vars, aVars, bVars, z},
+   m0 = Length[n];
+   aVars = ToExpression[Table["a" <> IntegerString[k], {k, m0}]];
+   bVars = ToExpression[Table["b" <> IntegerString[k], {k, m0}]];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   dc[a_, b_, \[Alpha]_, \[Theta]_] := 
+    Sqrt[\[Alpha]/d]*(a*E^(Sqrt[\[Alpha]/d]*\[Theta]) - 
+       b*E^(-Sqrt[\[Alpha]/d]*\[Theta]));
+   
+   (*  Create a system of eqs for c(\[Theta]) in each region *)
+   cSys = 
+    Table[c[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] ==
+       c[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   cSysWrap = 
+    c[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+     c[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   cSystem = Join[cSys, {cSysWrap}];
+   
+   (*do the same thing for the derivatives of c(\[Theta])*)
+   dcSys = 
+    Table[dc[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], 
+       n[[i]]] == 
+      dc[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   dcSysWrap = 
+    dc[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] ==
+      dc[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   dcSystem = Join[dcSys, {dcSysWrap}];
+   
+   totalcSys = Join[cSystem, dcSystem];
+   vars = Table[{aVars[[i]], bVars[[i]]}, {i, m0}] // Flatten;
+   {z, m} = CoefficientArrays[totalcSys, vars];
+   LinearSolve[m, -z]        
+   ];
+(*returns {a1,b1,a2,b2...}: in a region \[Sigma] \
+c_i=a*E^(a*\[Theta]/d)+b*E^(-a*\[Theta]/d)+si/\[Alpha]i. *)
+
+fullConcentration[n_, nutrient_] :=
+  Block[{a, b, c, coeff, positions, pieces, conditions, fullC},
+   coeff = getConcentration[n, nutrient];
+   positions = getPositions[n];
+   a = Table[coeff[[2*i - 1]], {i, m}];
+   b = Table[coeff[[2*i]], {i, m}];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   pieces = 
+    Table[c[a[[j]], b[[j]], \[Alpha][[j, nutrient]], 
+      theta - positions[[j, 1]]], {j, m}];
+   conditions = 
+    Table[positions[[i, 1]] < theta <= positions[[i, 2]], {i, m}];
+   fullC = Piecewise[Transpose[{pieces, conditions}]]
+   ];
+supply = 1;  (*total nutrient supply*)
+\[Delta] = supply;
+e = 1;             (* total enzyme budget*)
+steps = 10^10;
+s1 = 0.5;
+s2 = supply - s1;
+s = {s1, s2};
+numStrats = 25000;
+m = 10;
+
+getGrowth[pop_, species_, c_] :=
+  Block[{growth, myN, myA, myB},
+   myN = pop[[species]];
+   myA = c[[species*2 - 1]];
+   myB = c[[species*2]];
+   
+   growth = 
+    Table[\[Alpha][[species, 
+        i]]*((s[[i]]*myN/\[Alpha][[species, i]]) + 
+         Sqrt[d/\[Alpha][[species, 
+             i]]]*(myA[[
+              i]]*(E^(myN*Sqrt[\[Alpha][[species, i]]/d]) - 1) - 
+            myB[[i]]*(E^(-myN*Sqrt[\[Alpha][[species, i]]/d]) - 
+               1))), {i, 2}] // Total
+   ];
+ndot[n_?(VectorQ[#, NumericQ] &)] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = n;
+   n0 = n0 /. {x_ /; x < 10^-8 -> 0};
+   cCoeff = 
+    Transpose[{getConcentration[n0, 1], getConcentration[n0, 2]}];
+   growthTable = Table[getGrowth[n0, i, cCoeff], {i, Length[n0]}];
+   (*\[Delta]=Total[growthTable];*)
+   dn = growthTable - \[Delta]*n0
+   ];
+
+   growthRate[pops_, thisSpecies_] :=
+  Module[{thisDiversity, thisStrat, interactionNutrient1, 
+    interactionNutrient2, growth, thisSpeciesPosition},
+   thisDiversity = Length[pops];
+   thisStrat = \[Alpha][[thisSpecies]];
+   
+   interactionNutrient1 = 
+    Sum[pops[[i]]*\[Alpha][[i, 1]], {i, thisDiversity}];
+   interactionNutrient2 = 
+    Sum[pops[[i]]*\[Alpha][[i, 2]], {i, thisDiversity}];
+   
+   growth = (thisStrat[[1]]*s1/interactionNutrient1 + 
+       thisStrat[[2]]*s2/interactionNutrient2)*pops[[thisSpecies]]
+   ];
+
+evolveN[n_?(VectorQ[#, NumericQ] &)] :=
+  Block[{dn, growthTable, positions, n0, nNew},
+   n0 = n;
+   growthTable = Table[growthRate[n0, i], {i, Length[n0]}];
+   dn = growthTable - \[Delta]*n0
+   ];
+
+epsilonSet = {{40, 1}, {30, 1}, {20, 1}, {15, 1}, {10, 1}, {7, 1}, {Sqrt[10],
+    1}, {1, 1}, {1, 100}} ;(*(L,D*)
+alphas = Table[RandomReal[1, m], {i, numStrats}];
+
+Export["lDiversity_s1pt5_epsilonSet.mx", epsilonSet];
+Export["lDiversity_s1pt5_strats.mx", alphas];
+
+
+allFixedPoints = ConstantArray[0, numStrats];
+SetSharedVariable[allFixedPoints];
+
+ParallelDo[
+  l = epsilonSet[[1, 1]];
+  d = epsilonSet[[1, 2]];
+  nInit = l*ConstantArray[1/m, m];
+  theseAlphas = alphas[[i]]; 
+  \[Alpha] = 
+   Table[{theseAlphas[[k]], e - theseAlphas[[k]]}, {k, 
+     Length[theseAlphas]}];
+  
+  testSol = 
+   TimeConstrained[
+    NDSolveValue[{n'[t] == ndot[n[t]], n[0] == nInit}, 
+     n, {t, 0, steps}, 
+     Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-13}], 
+    300, -1];   (*returns either a solution, overtime condition, 
+  or failure to converge error*)
+  
+  testFP = testSol[testSol["Domain"][[1, 2]]]; msg = $MessageList;
+  (*returns either the answer, 
+  a warning about extrapolation if convergence fails, 
+  or a part spec error for timeout*)
+  
+  If[Length[msg] == 0,
+   (*If and only if high L worked out!*)
+   	thisAlphaFP = ConstantArray[0, Length[epsilonSet]+1];
+   	thisAlphaFP[[1]] = testFP;
+   	For[j = 2, j <= Length[epsilonSet], j++,
+    
+    	l = epsilonSet[[j, 1]];
+    	d = epsilonSet[[j, 2]];
+    	nInit = l*ConstantArray[1/m, m];
+    
+    	(*continue to steps or fixed point*)
+    	sol = 
+     NDSolveValue[{n'[t] == ndot[n[t]], n[0] == nInit}, 
+      n, {t, 0, steps}, 
+      Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-13}];
+    	thisFP = sol[sol["Domain"][[1, 2]]];
+    
+    	thisAlphaFP[[j]] = thisFP;
+    
+    	];
+    (*now calculate wellMixed solution*)
+    wmStep = 100000;
+	wellMixedInit = ConstantArray[1/m, m];
+	wellMixedSol = NDSolveValue[{n'[t] == evolveN[n[t]], n[0] == wellMixedInit}, n, {t, 0, wmStep}, Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-11}];
+	thisFP=wellMixedSol[wellMixedSol["Domain"][[1, 2]]];
+	thisAlphaFP[[-1]] = thisFP;
+    	
+    (*save this strats FP data to mast list*)	
+   	allFixedPoints[[i]] = thisAlphaFP;
+   , allFixedPoints[[i]] = -1;
+   ];
+   If[Mod[i,200]==0,Export["lDiversity_s1pt5_allFP_"<>ToString[i]<>".mx", allFixedPoints];];
+  , {i, numStrats}
+  ];
+
+Export["lDiversity_s1pt5_allFP.mx", allFixedPoints];

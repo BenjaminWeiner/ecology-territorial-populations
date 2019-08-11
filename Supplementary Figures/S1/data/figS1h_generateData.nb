@@ -1,0 +1,147 @@
+(*
+Generates the fixed point data for many random communities with tau_D=10 and s1=0.5. Because this simulation has no stiffness filtering,
+we use it in Fig. S1H as a comparison for our stiffness filtered data. 
+
+
+*)
+
+
+Clear["Global`*"]; 
+precision = 30;
+$MinPrecision = precision;
+
+getPositions[pop0_] :=
+  Block[{m0, list, extendedPop},
+   m0 = Length[pop0];
+   extendedPop = Join[{0}, pop0];
+   Table[{Total[extendedPop[[1 ;; i - 1]]], 
+     Total[extendedPop[[1 ;; i]]]}, {i, 2, m0 + 1}]
+   ];
+
+getConcentration[n_, nutrient_] :=
+  Block[{i, m0, c, dc, m, cSys, cSysWrap, cSystem, dcSys, dcSysWrap, 
+    dcSystem, totalcSys, vars, aVars, bVars, z},
+   m0 = Length[n];
+   aVars = ToExpression[Table["a" <> IntegerString[k], {k, m0}]];
+   bVars = ToExpression[Table["b" <> IntegerString[k], {k, m0}]];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   dc[a_, b_, \[Alpha]_, \[Theta]_] := 
+    Sqrt[\[Alpha]/d]*(a*E^(Sqrt[\[Alpha]/d]*\[Theta]) - 
+       b*E^(-Sqrt[\[Alpha]/d]*\[Theta]));
+   
+   (*  Create a system of eqs for c(\[Theta]) in each region *)
+   cSys = 
+    Table[c[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] ==
+       c[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   cSysWrap = 
+    c[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+     c[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   cSystem = Join[cSys, {cSysWrap}];
+   
+   (*do the same thing for the derivatives of c(\[Theta])*)
+   dcSys = 
+    Table[dc[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], 
+       n[[i]]] == 
+      dc[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   dcSysWrap = 
+    dc[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] ==
+      dc[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   dcSystem = Join[dcSys, {dcSysWrap}];
+   
+   totalcSys = Join[cSystem, dcSystem];
+   vars = Table[{aVars[[i]], bVars[[i]]}, {i, m0}] // Flatten;
+   {z, m} = CoefficientArrays[totalcSys, vars];
+   LinearSolve[m, -z]        
+   ];
+(*returns {a1,b1,a2,b2...}: in a region \[Sigma] \
+c_i=a*E^(a*\[Theta]/d)+b*E^(-a*\[Theta]/d)+si/\[Alpha]i. *)
+
+fullConcentration[n_, nutrient_] :=
+  Block[{a, b, c, coeff, positions, pieces, conditions, fullC},
+   coeff = getConcentration[n, nutrient];
+   positions = getPositions[n];
+   a = Table[coeff[[2*i - 1]], {i, m}];
+   b = Table[coeff[[2*i]], {i, m}];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   pieces = 
+    Table[c[a[[j]], b[[j]], \[Alpha][[j, nutrient]], 
+      theta - positions[[j, 1]]], {j, m}];
+   conditions = 
+    Table[positions[[i, 1]] < theta <= positions[[i, 2]], {i, m}];
+   fullC = Piecewise[Transpose[{pieces, conditions}]]
+   ];
+
+supply = 1;  (*total nutrient supply*)
+\[Delta] = supply;
+e = 1;             (* total enzyme budget*)
+steps = 1000000;
+
+d = 1; // N(*diffusion coefficient*)
+l = Sqrt[10];
+s1 = 0.5;
+s2 = supply - s1;
+s = {s1, s2};
+numTrials = 2000;
+m = 10;
+alphas = Table[RandomReal[1, m], {i, numTrials}];
+
+getGrowth[pop_, species_, c_] :=
+  Block[{growth, myN, myA, myB},
+   myN = pop[[species]];
+   myA = c[[species*2 - 1]];
+   myB = c[[species*2]];
+   
+   growth = 
+    Table[\[Alpha][[species, 
+        i]]*((s[[i]]*myN/\[Alpha][[species, i]]) + 
+         Sqrt[d/\[Alpha][[species, 
+             i]]]*(myA[[
+              i]]*(E^(myN*Sqrt[\[Alpha][[species, i]]/d]) - 1) - 
+            myB[[i]]*(E^(-myN*Sqrt[\[Alpha][[species, i]]/d]) - 
+               1))), {i, 2}] // Total
+   ];
+
+ndot[n_?(VectorQ[#, NumericQ] &)] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = n;
+   n0 = n0 /. {x_ /; x < l/10^9 -> 0};
+   cCoeff = 
+    Transpose[{getConcentration[n0, 1], getConcentration[n0, 2]}];
+   growthTable = Table[getGrowth[n0, i, cCoeff], {i, Length[n0]}];
+   (*\[Delta]=Total[growthTable];*)
+   dn = growthTable - \[Delta]*n0
+   ];
+
+
+randomInit[n_] := RandomPoint[Simplex[l*IdentityMatrix[m]], n];
+
+sols = ConstantArray[0, numTrials];
+fixedPoints = ConstantArray[0, numTrials];
+nInit = l*ConstantArray[1/m, m];
+
+SetSharedVariable[sols, fixedPoints];
+
+ParallelDo[
+  theseAlphas = alphas[[i]];
+  \[Alpha] = 
+   Table[{theseAlphas[[i]], e - theseAlphas[[i]]}, {i, 
+     Length[theseAlphas]}];
+  sol = NDSolveValue[{n'[t] == ndot[n[t]], n[0] == nInit}, 
+    n, {t, 0, steps}];
+  fixedPoints[[i]] = sol[steps];
+  sols[[i]] = sol;
+  , {i, numTrials}
+  ];
+
+Export["stiffnessCheck_pbc_m10_s1=" <> ToString[s1] <> 
+   "_d=" <> ToString[d] <> "_l=" <> ToString[l] <> 
+   "_fixedPoints_trajectories_alphas_long.mx", {fixedPoints,s1, 
+   alphas}];
+
+   Quit[];

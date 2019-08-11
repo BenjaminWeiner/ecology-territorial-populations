@@ -1,0 +1,124 @@
+(*
+
+Generate the data used to plot multistability phase diagrams in Figure S4. Given the environmental parameters, this returns the number of steady states
+for every possible 2-species competition by varying the strategy parameters. Returns data for a single value of s1 and L, which can be adjusted on lines 12/13.
+
+*)
+
+
+
+Clear["Global`*"];
+
+s1 = 0.35;
+L = 20;
+
+(*note that 10^-3 resolution takes about 3 hours*)
+
+getConcentration[n_, nutrient_, \[Alpha]_] :=
+  Block[{i, m0, c, dc, m, cSystem, dcSys, dcSysWrap1, dcSysWrap2, 
+    dcSystem, totalcSys, vars, aVars, bVars, z},
+   m0 = Length[n];
+   aVars = ToExpression[Table["a" <> IntegerString[k], {k, m0}]];
+   bVars = ToExpression[Table["b" <> IntegerString[k], {k, m0}]];
+   c[a_, b_, alpha_, \[Theta]_] := 
+    a*E^(Sqrt[alpha/d]*\[Theta]) + b*E^(-Sqrt[alpha/d]*\[Theta]) + 
+     s[[nutrient]]/alpha;
+   dc[a_, b_, alpha_, \[Theta]_] := 
+    Sqrt[alpha/d]*(a*E^(Sqrt[alpha/d]*\[Theta]) - 
+       b*E^(-Sqrt[alpha/d]*\[Theta]));
+   
+   (*  Create a system of eqs for c(\[Theta]) in each region *)
+cSys = Table[
+   c[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] == 
+    c[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+     0], {i, m0 - 1}];
+cSysWrap = 
+  c[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+   c[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+cSystem = Join[cSys, {cSysWrap}];
+
+(*do the same thing for the derivatives of c(\[Theta])*)
+dcSys = Table[
+   dc[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] == 
+    dc[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+     0], {i, m0 - 1}];
+dcSysWrap = 
+  dc[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+   dc[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+dcSystem = Join[dcSys, {dcSysWrap}];
+   
+   
+   totalcSys = Join[cSystem, dcSystem];
+   vars = Table[{aVars[[i]], bVars[[i]]}, {i, m0}] // Flatten;
+   {z, m} = CoefficientArrays[totalcSys, vars];
+   LinearSolve[m, -z]  
+   ];
+(*returns {a1,b1,a2,b2...}: in a region \[Sigma] \
+c_i=a*E^(a*\[Theta]/d)+b*E^(-a*\[Theta]/d)+si/\[Alpha]i. *)
+
+
+getGrowth[pop_, species_, c_, \[Alpha]_] :=
+  Block[{growth, myN, myA, myB},
+   myN = pop[[species]];
+   myA = c[[species*2 - 1]];
+   myB = c[[species*2]];
+   
+   growth = 
+    Table[\[Alpha][[species, 
+        i]]*((s[[i]]*myN/\[Alpha][[species, i]]) + 
+         Sqrt[d/\[Alpha][[species, 
+             i]]]*(myA[[
+              i]]*(E^(myN*Sqrt[\[Alpha][[species, i]]/d]) - 1) - 
+            myB[[i]]*(E^(-myN*Sqrt[\[Alpha][[species, i]]/d]) - 
+               1))), {i, 2}] // Total
+   ];
+
+ndot[n1_, \[Alpha]_] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = {n1, L - n1};
+   cCoeff = 
+    Transpose[{getConcentration[n0, 1, \[Alpha]], 
+      getConcentration[n0, 2, \[Alpha]]}];
+   growthTable = 
+    Table[getGrowth[n0, i, cCoeff, \[Alpha]], {i, Length[n0]}];
+   (*\[Delta]=Total[growthTable];*)
+   dn = growthTable - \[Delta]*n0 // First
+   ];
+
+s2 = 1 - s1;
+s = {s1, s2};
+d = 1;
+e = 1;
+\[Delta] = 1;
+
+rootCounter[strat1_, strat2_] :=
+  Block[{\[Alpha], rootList,(*uniqueList,*)count},
+   \[Alpha] = {{strat1, e - strat1}, {strat2, e - strat2}};
+   rootList = 
+    Table[x /. 
+      Quiet[Check[FindRoot[ndot[x, \[Alpha]], {x, i, 0, L}], 
+        x -> -1]], {i, 0, L, .5}];
+   (*check condition lets you throw out invalid roots for flat \
+Jacobians and such*)
+   uniqueList = Union[rootList, SameTest -> (Abs[#1 - #2] <= 10^-3 &)];
+   uniqueList = DeleteCases[uniqueList, -1];
+   uniqueList = DeleteCases[uniqueList, x_ /; x <= 0.];
+   uniqueList = DeleteCases[uniqueList, x_ /; x >= L - 10^-5];
+   count = uniqueList // Length
+   ];
+
+(*gives number of coexisting roots: should be 1 or 3. 0 and L have \
+been removed, even when those are the stable fp*)
+
+name = "multistabilityRegion_PBC_" <> "s1=" <> ToString[s1] <> "_d=" <>
+    ToString[d] <> "_L=" <> ToString[L];
+
+results = 
+  ParallelTable[{i, j, rootCounter[i, j]}, {i, 0.001, .999, .001}, {j,
+     i + .001, .999, .001}];
+
+Export[name <> "_results.mx", results];
+
+params = Table[{i, j}, {i, 0.01, .99, .01}, {j, i + .01, .99, .01}];
+
+Quit[];
