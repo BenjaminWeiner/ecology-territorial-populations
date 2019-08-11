@@ -1,0 +1,171 @@
+(*
+
+Code to generate the data for Fig. 6D (spatial systems with approximate trade-offs.)
+It chooses random sets of strategies, and draws each species' enzyme budget from a normal distribution. 
+
+Each "condition" refers to a noise strength, which is the standard deviation of the normal distribution from which the budgets were drawn.
+
+This notebook is formatted for batch mode, so it's best to open and edit in a text editor rather than Mathematica itself.
+
+*)
+
+
+
+Clear["Global`*"]; 
+precision = 30;
+$MinPrecision = precision;
+
+getPositions[pop0_] :=
+  Block[{m0, list, extendedPop},
+   m0 = Length[pop0];
+   extendedPop = Join[{0}, pop0];
+   Table[{Total[extendedPop[[1 ;; i - 1]]], 
+     Total[extendedPop[[1 ;; i]]]}, {i, 2, m0 + 1}]
+   ];
+
+getConcentration[n_, nutrient_] :=
+  Block[{i, m0, c, dc, m, cSys, cSysWrap, cSystem, dcSys, dcSysWrap, 
+    dcSystem, totalcSys, vars, aVars, bVars, z},
+   m0 = Length[n];
+   aVars = ToExpression[Table["a" <> IntegerString[k], {k, m0}]];
+   bVars = ToExpression[Table["b" <> IntegerString[k], {k, m0}]];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   dc[a_, b_, \[Alpha]_, \[Theta]_] := 
+    Sqrt[\[Alpha]/d]*(a*E^(Sqrt[\[Alpha]/d]*\[Theta]) - 
+       b*E^(-Sqrt[\[Alpha]/d]*\[Theta]));
+   
+   (*  Create a system of eqs for c(\[Theta]) in each region *)
+   cSys = 
+    Table[c[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] ==
+       c[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   cSysWrap = 
+    c[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+     c[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   cSystem = Join[cSys, {cSysWrap}];
+   
+   (*do the same thing for the derivatives of c(\[Theta])*)
+   dcSys = 
+    Table[dc[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], 
+       n[[i]]] == 
+      dc[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   dcSysWrap = 
+    dc[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] ==
+      dc[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   dcSystem = Join[dcSys, {dcSysWrap}];
+   
+   totalcSys = Join[cSystem, dcSystem];
+   vars = Table[{aVars[[i]], bVars[[i]]}, {i, m0}] // Flatten;
+   {z, m} = CoefficientArrays[totalcSys, vars];
+   LinearSolve[m, -z]        
+   ];
+(*returns {a1,b1,a2,b2...}: in a region \[Sigma] \
+c_i=a*E^(a*\[Theta]/d)+b*E^(-a*\[Theta]/d)+si/\[Alpha]i. *)
+
+fullConcentration[n_, nutrient_] :=
+  Block[{a, b, c, coeff, positions, pieces, conditions, fullC},
+   coeff = getConcentration[n, nutrient];
+   positions = getPositions[n];
+   a = Table[coeff[[2*i - 1]], {i, m}];
+   b = Table[coeff[[2*i]], {i, m}];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   pieces = 
+    Table[c[a[[j]], b[[j]], \[Alpha][[j, nutrient]], 
+      theta - positions[[j, 1]]], {j, m}];
+   conditions = 
+    Table[positions[[i, 1]] < theta <= positions[[i, 2]], {i, m}];
+   fullC = Piecewise[Transpose[{pieces, conditions}]]
+   ];
+l = Sqrt[10];
+d = 1;
+supply = 1;  (*total nutrient supply*)
+\[Delta] = supply;
+e = 1;             (* total enzyme budget*)
+steps = 10^10;
+s1 = 0.4;
+s2 = supply - s1;
+s = {s1, s2};
+numTrials = 2000;
+m = 20;
+nInit = l*ConstantArray[1/m, m];
+
+getGrowth[pop_, species_, c_] :=
+  Block[{growth, myN, myA, myB},
+   myN = pop[[species]];
+   myA = c[[species*2 - 1]];
+   myB = c[[species*2]];
+   
+   growth = 
+    Table[\[Alpha][[species, 
+        i]]*((s[[i]]*myN/\[Alpha][[species, i]]) + 
+         Sqrt[d/\[Alpha][[species, 
+             i]]]*(myA[[
+              i]]*(E^(myN*Sqrt[\[Alpha][[species, i]]/d]) - 1) - 
+            myB[[i]]*(E^(-myN*Sqrt[\[Alpha][[species, i]]/d]) - 
+               1))), {i, 2}] // Total
+   ];
+ndot[n_?(VectorQ[#, NumericQ] &)] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = n;
+   n0 = n0 /. {x_ /; x < 10^-8 -> 0};
+   cCoeff = 
+    Transpose[{getConcentration[n0, 1], getConcentration[n0, 2]}];
+   growthTable = Table[getGrowth[n0, i, cCoeff], {i, Length[n0]}];
+   (*\[Delta]=Total[growthTable];*)
+   dn = growthTable - \[Delta]*n0
+   ];
+
+noiseSet = {0, 10^-4, 10^-3, 5*10^-3, 10^-2, 
+  10^-1}; (*standard deviation of normal distribution from which \
+budgets are drawn. nb special value of 0 *)
+name = "noisyE_p2_s1pt4_";
+Export[name <> "noiseSet.mx", noiseSet];
+
+
+
+
+Do[
+  (*generate strategies for each trial*)
+  thisNoise = noiseSet[[i]];
+  
+  If[thisNoise == 0, budgets = ConstantArray[e, {numTrials, m}], 
+   budgets = 
+    Table[RandomVariate[NormalDistribution[e, thisNoise], m], {k, 
+      numTrials}]];
+  allStrats = ConstantArray[0, numTrials];
+  For[k = 1, k <= numTrials, k++,
+   alphas = Table[RandomReal[budgets[[k, w]]], {w, m}];
+   allStrats[[k]] = 
+    Table[{alphas[[w]], budgets[[k, w]] - alphas[[w]]}, {w, m}]
+   ];
+  
+  allFixedPoints = ConstantArray[0, numTrials];
+  SetSharedVariable[allFixedPoints];
+  
+  ParallelDo[
+   
+   \[Alpha] = allStrats[[j]];
+   
+   testSol = 
+    TimeConstrained[
+     NDSolveValue[{n'[t] == ndot[n[t]], n[0] == nInit}, 
+      n, {t, 0, steps}, 
+      Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-11}], 
+     300, -1]; (*returns  a solution, or -1 if it exceeds time*)
+   testFP = Quiet[testSol[testSol["Domain"][[1, 2]]]];
+   If[SameQ[testSol, -1] || testSol["Domain"][[1, 2]] == steps, 
+    allFixedPoints[[j]] = -1, allFixedPoints[[j]] = testFP];
+   (*if it doesn't stop until "steps", there's no FP: 
+   potentially oscillating*)
+   
+   , {j, numTrials}
+   ];
+  Export[name <> "noise_strats_fp_condition" <> ToString[i] <> 
+    ".mx", {thisNoise, allStrats, allFixedPoints}]
+  , {i, Length[noiseSet]}
+  ];

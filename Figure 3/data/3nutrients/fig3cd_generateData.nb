@@ -1,0 +1,148 @@
+(*
+
+Code to generate the data for Fig. 3C and 3D (p=3 nutrients).
+It chooses random sets of strategies and returns their steady states.
+In the text, we use D=1, L=Sqrt[10], E=1, so tau_D=10
+
+This generates data for a single value of the nutrient supply, which can be changed by editing s in line 16. In Figure 3C, D. we analyze data for a range
+of s.
+
+This notebook is formatted for batch mode, so it's best to open and edit in a text editor rather than Mathematica itself.
+
+*)
+
+Clear["Global`*"]; 
+
+s = {.5, .25, .25};
+
+precision = 30;
+$MinPrecision = precision;
+
+getPositions[pop0_] :=
+  Block[{m0, list, extendedPop},
+   m0 = Length[pop0];
+   extendedPop = Join[{0}, pop0];
+   Table[{Total[extendedPop[[1 ;; i - 1]]], 
+     Total[extendedPop[[1 ;; i]]]}, {i, 2, m0 + 1}]
+   ];
+
+getConcentration[n_, nutrient_] :=
+  Block[{i, m0, c, dc, m, cSys, cSysWrap, cSystem, dcSys, dcSysWrap, 
+    dcSystem, totalcSys, vars, aVars, bVars, z},
+   m0 = Length[n];
+   aVars = ToExpression[Table["a" <> IntegerString[k], {k, m0}]];
+   bVars = ToExpression[Table["b" <> IntegerString[k], {k, m0}]];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   dc[a_, b_, \[Alpha]_, \[Theta]_] := 
+    Sqrt[\[Alpha]/d]*(a*E^(Sqrt[\[Alpha]/d]*\[Theta]) - 
+       b*E^(-Sqrt[\[Alpha]/d]*\[Theta]));
+   
+   (*  Create a system of eqs for c(\[Theta]) in each region *)
+   cSys = 
+    Table[c[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], n[[i]]] ==
+       c[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   cSysWrap = 
+    c[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] == 
+     c[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   cSystem = Join[cSys, {cSysWrap}];
+   
+   (*do the same thing for the derivatives of c(\[Theta])*)
+   dcSys = 
+    Table[dc[aVars[[i]], bVars[[i]], \[Alpha][[i, nutrient]], 
+       n[[i]]] == 
+      dc[aVars[[i + 1]], bVars[[i + 1]], \[Alpha][[i + 1, nutrient]], 
+       0], {i, m0 - 1}];
+   dcSysWrap = 
+    dc[aVars[[m0]], bVars[[m0]], \[Alpha][[m0, nutrient]], n[[m0]]] ==
+      dc[aVars[[1]], bVars[[1]], \[Alpha][[1, nutrient]], 0];
+   dcSystem = Join[dcSys, {dcSysWrap}];
+   
+   totalcSys = Join[cSystem, dcSystem];
+   vars = Table[{aVars[[i]], bVars[[i]]}, {i, m0}] // Flatten;
+   {z, m} = CoefficientArrays[totalcSys, vars];
+   LinearSolve[m, -z]  
+   ];
+(*returns {a1,b1,a2,b2...}: in a region \[Sigma] \
+c_i=a*E^(a*\[Theta]/d)+b*E^(-a*\[Theta]/d)+si/\[Alpha]i. *)
+
+fullConcentration[n_, nutrient_] :=
+  Block[{a, b, c, coeff, positions, pieces, conditions, fullC},
+   coeff = getConcentration[n, nutrient];
+   positions = getPositions[n];
+   a = Table[coeff[[2*i - 1]], {i, m}];
+   b = Table[coeff[[2*i]], {i, m}];
+   c[a_, b_, \[Alpha]_, \[Theta]_] := 
+    a*E^(Sqrt[\[Alpha]/d]*\[Theta]) + 
+     b*E^(-Sqrt[\[Alpha]/d]*\[Theta]) + s[[nutrient]]/\[Alpha];
+   pieces = 
+    Table[c[a[[j]], b[[j]], \[Alpha][[j, nutrient]], 
+      theta - positions[[j, 1]]], {j, m}];
+   conditions = 
+    Table[positions[[i, 1]] < theta <= positions[[i, 2]], {i, m}];
+   fullC = Piecewise[Transpose[{pieces, conditions}]]
+   ];
+
+supply = 1;  (*total nutrient supply*)
+\[Delta] = supply;
+e = 1;             (* total enzyme budget*)
+steps = 200000;
+
+d = 1; // N(*diffusion coefficient*)
+l = Sqrt[10];
+p = Length[s];
+numTrials = 5000;
+m = 20;
+
+randomStrats[number_] := 
+  RandomPoint[Simplex[e*IdentityMatrix[p]], number];
+
+alphas = Table[randomStrats[m], {i, numTrials}];
+
+getGrowth[pop_, species_, c_] :=
+  Block[{growth, myN, myA, myB},
+   myN = pop[[species]];
+   myA = c[[species*2 - 1]];
+   myB = c[[species*2]];
+   
+   growth = 
+    Table[\[Alpha][[species, 
+        i]]*((s[[i]]*myN/\[Alpha][[species, i]]) + 
+         Sqrt[d/\[Alpha][[species, 
+             i]]]*(myA[[
+              i]]*(E^(myN*Sqrt[\[Alpha][[species, i]]/d]) - 1) - 
+            myB[[i]]*(E^(-myN*Sqrt[\[Alpha][[species, i]]/d]) - 
+               1))), {i, p}] // Total
+   ];
+
+ndot[n_?(VectorQ[#, NumericQ] &)] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = n;
+   n0 = n0 /. {x_ /; x < l/10^9 -> 0};
+   cCoeff = Transpose[Table[getConcentration[n0, v], {v, p}]];
+   growthTable = Table[getGrowth[n0, i, cCoeff], {i, Length[n0]}];
+   (*\[Delta]=Total[growthTable];*)
+   dn = growthTable - \[Delta]*n0
+   ];
+
+
+sols = ConstantArray[0, numTrials];
+fixedPoints = ConstantArray[0, numTrials];
+nInit = l*ConstantArray[1/m, m];
+
+SetSharedVariable[sols, fixedPoints];
+
+ParallelDo[
+  \[Alpha] = alphas[[i]];
+  sol = NDSolveValue[{n'[t] == ndot[n[t]], n[0] == nInit}, 
+    n, {t, 0, steps}];
+  fixedPoints[[i]] = sol[steps];
+  sols[[i]] = sol;
+  , {i, numTrials}
+  ];
+
+Export["statisticalCoexistence_pbc_m20_"<> 
+   "_d=" <> ToString[d] <> "_l=" <> ToString[l] <>"_s1="<>ToString[s[[1]]]<>
+   "_p3_fixedPoints_s_alphas.mx", {fixedPoints,s,alphas}];

@@ -1,0 +1,114 @@
+(*
+
+Code to generate the data for Fig. 6C (well-mixed systems with approximate trade-offs.)
+It chooses random sets of strategies, and draws each species' enzyme budget from a normal distribution. 
+
+Each "condition" refers to a noise strength, which is the standard deviation of the normal distribution from which the budgets were drawn.
+
+This notebook is formatted for batch mode, so it's best to open and edit in a text editor rather than Mathematica itself.
+
+*)
+
+Clear["Global`*"]; 
+precision = 30;
+$MinPrecision = precision;
+
+getPositions[pop0_] :=
+  Block[{m0, list, extendedPop},
+   m0 = Length[pop0];
+   extendedPop = Join[{0}, pop0];
+   Table[{Total[extendedPop[[1 ;; i - 1]]], 
+     Total[extendedPop[[1 ;; i]]]}, {i, 2, m0 + 1}]
+   ];
+
+
+l = Sqrt[10];
+d = 1;
+supply = 1;  (*total nutrient supply*)
+\[Delta] = supply;
+e = 1;             (* total enzyme budget*)
+steps = 10^10;
+
+s1 = 0.4;
+s2 = supply - s1;
+s1 = l*s1;
+s2 = l*s2;
+s = {s1, s2};
+numTrials = 2000;
+m = 20;
+nInit = l*ConstantArray[1/m, m];
+
+growthRate[pops_, thisSpecies_] :=
+  Module[{thisDiversity, thisStrat, interactionNutrient1, 
+    interactionNutrient2, growth, thisSpeciesPosition},
+   thisDiversity = Length[pops];
+   thisStrat = \[Alpha][[thisSpecies]];
+   
+   interactionNutrient1 = 
+    Sum[pops[[i]]*\[Alpha][[i, 1]], {i, thisDiversity}];
+   interactionNutrient2 = 
+    Sum[pops[[i]]*\[Alpha][[i, 2]], {i, thisDiversity}];
+   
+   growth = (thisStrat[[1]]*s1/interactionNutrient1 + 
+       thisStrat[[2]]*s2/interactionNutrient2)*pops[[thisSpecies]]
+   ];
+
+ndot[n_?(VectorQ[#, NumericQ] &)] :=
+  Block[{dn, growthTable, n0, nNew, cCoeff},
+   n0 = n;
+   n0 = n0 /. {x_ /; x < 10^-8 -> 0};
+   growthTable = Table[growthRate[n0, i], {i, Length[n0]}];
+   dn = growthTable - \[Delta]*n0
+   ];
+
+noiseSet = {0, 10^-4, 10^-3, 5*10^-3, 10^-2, 
+  10^-1}; (*standard deviation of normal distribution from which \
+budgets are drawn. nb special value of 0 *)
+name = "noisyE_p2_s1pt4_";
+Export[name <> "noiseSet_wm.mx", noiseSet];
+
+
+
+
+Do[
+  (*generate strategies for each trial*)
+  thisNoise = noiseSet[[i]];
+  
+  If[thisNoise == 0, budgets = ConstantArray[e, {numTrials, m}], 
+   budgets = 
+    Table[RandomVariate[NormalDistribution[e, thisNoise], m], {k, 
+      numTrials}]];
+  allStrats = ConstantArray[0, numTrials];
+  For[k = 1, k <= numTrials, k++,
+   alphas = Table[RandomReal[budgets[[k, w]]], {w, m}];
+   allStrats[[k]] = 
+    Table[{alphas[[w]], budgets[[k, w]] - alphas[[w]]}, {w, m}]
+   ];
+  
+  allFixedPoints = ConstantArray[0, numTrials];
+  SetSharedVariable[allFixedPoints];
+  
+  ParallelDo[
+   
+   \[Alpha] = allStrats[[j]];
+   
+   testSol = 
+    TimeConstrained[
+     NDSolveValue[{n'[t] == ndot[n[t]], n[0] == nInit}, 
+      n, {t, 0, steps}, 
+      Method -> {"EventLocator", "Event" -> Norm[n'[t]] < 10^-11}], 
+     300, -1]; (*returns  a solution, or -1 if it exceeds time*)
+   testFP = Quiet[testSol[testSol["Domain"][[1, 2]]]];
+   If[SameQ[testSol, -1] || testSol["Domain"][[1, 2]] == steps, 
+    allFixedPoints[[j]] = -1, allFixedPoints[[j]] = testFP];
+   (*if it doesn't stop until "steps", there's no FP: 
+   potentially oscillating*)
+   
+   , {j, numTrials}
+   ];
+  Export[name <> "noise_strats_fp_condition" <> ToString[i] <> 
+    "_wm.mx", {thisNoise, allStrats, allFixedPoints}]
+  , {i, Length[noiseSet]}
+  ];
+
+  Quit[];
